@@ -96,11 +96,27 @@
     backendStatus.className = ok ? "success" : "error";
   }
 
+  /* ⭐ FIXED: Apps Script-safe ping function */
   async function pingBackend(url) {
-    const res = await fetch(url + "?action=ping").catch(() => null);
-    if (!res) throw new Error("No response");
-    const data = await res.json();
-    if (data.backend !== "custom") throw new Error("Backend not in custom mode");
+    let res;
+    try {
+      res = await fetch(url + "?action=ping");
+    } catch (e) {
+      throw new Error("No response");
+    }
+
+    const text = await res.text();
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      throw new Error("Backend returned non‑JSON response");
+    }
+
+    if (data.backend !== "custom") {
+      throw new Error("Backend not in custom mode");
+    }
   }
 
   saveBackendBtn.addEventListener("click", async () => {
