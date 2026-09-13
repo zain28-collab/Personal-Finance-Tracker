@@ -1,108 +1,141 @@
-// ╔══════════════════════════════════════════════════════════╗
-// ║  VERSION CONFIG — UPDATE THIS WHEN RELEASING A CHANGE   ║
-// ╠══════════════════════════════════════════════════════════╣
-// ║  CACHE_NAME  →  bump whenever index.html changes         ║
-// ║  Forces all users' browsers to pull the new version      ║
-// ║  Match this to MIN_CODE_VERSION in index.html            ║
-// ╚══════════════════════════════════════════════════════════╝
-var CACHE_NAME  = "financials-v2.3.4";
+// Simple frontend for Apps Script backend
+// Assumes backend supports ?action=getCategories, addExpense, getExpenses
 
-// ── Everything below rarely needs changing ────────────────────
-var REPO_PATH   = "/Personal-Finance-Tracker";
-var APP_SHELL   = [
-  REPO_PATH + "/",
-  REPO_PATH + "/index.html"
-];
+const backendStatus = document.getElementById("backendStatus");
+const backendInput = document.getElementById("backendUrl");
+const saveBackendBtn = document.getElementById("saveBackendBtn");
 
-// ── INSTALL ───────────────────────────────────────────────────
-self.addEventListener("install", function(e) {
-  e.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(function(cache) { return cache.addAll(APP_SHELL); })
-      .then(function() { return self.skipWaiting(); })
-  );
-});
+const categorySelect = document.getElementById("category");
+const addExpenseBtn = document.getElementById("addExpenseBtn");
+const addExpenseMsg = document.getElementById("addExpenseMsg");
+const expenseList = document.getElementById("expenseList");
 
-// ── ACTIVATE: delete old caches ──────────────────────────────
-self.addEventListener("activate", function(e) {
-  e.waitUntil(
-    caches.keys().then(function(keys) {
-      return Promise.all(
-        keys.filter(function(k) { return k !== CACHE_NAME; })
-            .map(function(k)    { return caches.delete(k); })
-      );
-    }).then(function() { return self.clients.claim(); })
-  );
-});
+function getBackendUrl() {
+  return localStorage.getItem("backendUrl") || "";
+}
 
-// ── FETCH ─────────────────────────────────────────────────────
-self.addEventListener("fetch", function(e) {
-  var url = new URL(e.request.url);
+function setBackendUrl(url) {
+  localStorage.setItem("backendUrl", url);
+}
 
-  // ── Never intercept: Apps Script, Google APIs, CDN ───────
-  if (url.hostname.indexOf("script.google.com")    > -1 ||
-      url.hostname.indexOf("googleusercontent.com") > -1 ||
-      url.hostname.indexOf("cdnjs.cloudflare.com")  > -1 ||
-      url.hostname.indexOf("apis.google.com")        > -1) {
-    return; // let browser handle it normally
+function showBackendStatus(msg, ok = false) {
+  backendStatus.textContent = msg;
+  backendStatus.className = ok ? "success" : "error";
+}
+
+async function pingBackend(url) {
+  const res = await fetch(url + "?action=ping").catch(() => null);
+  if (!res) throw new Error("No response");
+  const data = await res.json();
+  if (data.backend !== "custom") throw new Error("Backend not in custom mode");
+}
+
+// Save backend URL
+saveBackendBtn.addEventListener("click", async () => {
+  const url = backendInput.value.trim();
+  if (!url) {
+    showBackendStatus("Please enter a backend URL");
+    return;
   }
+  showBackendStatus("Checking backend...");
+  try {
+    await pingBackend(url);
+    setBackendUrl(url);
+    showBackendStatus("Backend saved and verified", true);
+    await loadCategories();
+    await loadRecentExpenses();
+  } catch (e) {
+    showBackendStatus("Could not verify backend: " + e.message);
+  }
+});
 
-  // ── Only cache same-origin requests to this repo ─────────
-  if (url.hostname !== self.location.hostname) {
+// Load categories
+async function loadCategories() {
+  const url = getBackendUrl();
+  if (!url) return;
+  categorySelect.innerHTML = "";
+  try {
+    const res = await fetch(url + "?action=getCategories");
+    const data = await res.json();
+    (data.categories || []).forEach(cat => {
+      const opt = document.createElement("option");
+      opt.value = cat;
+      opt.textContent = cat;
+      categorySelect.appendChild(opt);
+    });
+  } catch {
+    // ignore for now
+  }
+}
+
+// Add expense
+addExpenseBtn.addEventListener("click", async () => {
+  const url = getBackendUrl();
+  if (!url) {
+    addExpenseMsg.textContent = "Set backend URL first.";
     return;
   }
 
-  // ── App shell (index.html and root path) ─────────────────
-  var isAppShell = (
-    url.pathname === REPO_PATH + "/" ||
-    url.pathname === REPO_PATH + "/index.html" ||
-    url.pathname === REPO_PATH
-  );
+  const amount = parseFloat(document.getElementById("amount").value);
+  const category = categorySelect.value;
+  const vendor = document.getElementById("vendor").value.trim();
+  const notes = document.getElementById("notes").value.trim();
 
-  if (isAppShell) {
-    // Cache-first: serve instantly from cache, update in background
-    e.respondWith(
-      caches.open(CACHE_NAME).then(function(cache) {
-        return cache.match(e.request).then(function(cached) {
-          var networkFetch = fetch(e.request)
-            .then(function(response) {
-              if (response && response.status === 200) {
-                cache.put(e.request, response.clone());
-              }
-              return response;
-            })
-            .catch(function() { return cached; });
-
-          return cached || networkFetch;
-        });
-      })
-    );
+  if (!amount || !category) {
+    addExpenseMsg.textContent = "Amount and category are required.";
     return;
   }
 
-  // ── service-worker.js and manifest.json ──────────────────
-  // Network-first so updates are picked up immediately
-  if (url.pathname.indexOf("service-worker.js") > -1 ||
-      url.pathname.indexOf("manifest.json") > -1) {
-    e.respondWith(
-      fetch(e.request).catch(function() {
-        return caches.match(e.request);
-      })
-    );
-    return;
+  addExpenseMsg.textContent = "Saving...";
+  try {
+    const res = await fetch(url + "?action=addExpense", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount, category, vendor, notes })
+    });
+    const data = await res.json();
+    if (data.status === "ok") {
+      addExpenseMsg.textContent = "Expense added.";
+      addExpenseMsg.className = "success";
+      document.getElementById("amount").value = "";
+      document.getElementById("vendor").value = "";
+      document.getElementById("notes").value = "";
+      await loadRecentExpenses();
+    } else {
+      addExpenseMsg.textContent = "Backend error.";
+      addExpenseMsg.className = "error";
+    }
+  } catch {
+    addExpenseMsg.textContent = "Failed to add expense.";
+    addExpenseMsg.className = "error";
   }
-
-  // ── Everything else on same origin: network-first ────────
-  e.respondWith(
-    fetch(e.request).catch(function() {
-      return caches.match(e.request);
-    })
-  );
 });
 
-// ── MESSAGE ───────────────────────────────────────────────────
-self.addEventListener("message", function(e) {
-  if (e.data && e.data.type === "SKIP_WAITING") {
-    self.skipWaiting();
+// Load recent expenses
+async function loadRecentExpenses() {
+  const url = getBackendUrl();
+  if (!url) return;
+  expenseList.innerHTML = "";
+  try {
+    const res = await fetch(url + "?action=getExpenses&limit=10");
+    const data = await res.json();
+    (data.expenses || []).forEach(e => {
+      const li = document.createElement("li");
+      li.textContent = `${e.date} – ${e.category} – ${e.amount} – ${e.vendor || ""}`;
+      expenseList.appendChild(li);
+    });
+  } catch {
+    // ignore
+  }
+}
+
+// Init
+window.addEventListener("load", async () => {
+  const url = getBackendUrl();
+  if (url) {
+    backendInput.value = url;
+    showBackendStatus("Using saved backend URL", true);
+    await loadCategories();
+    await loadRecentExpenses();
   }
 });
