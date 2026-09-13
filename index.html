@@ -172,12 +172,17 @@
 
     addExpenseMsg.textContent = "Saving...";
     try {
-      const res = await fetch(url + "?action=addExpense", {
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount, category, vendor, notes })
+        body: JSON.stringify({
+          action: "addExpense",
+          data: { amount, category, vendor, notes }
+        })
       });
+
       const data = await res.json();
+
       if (data.status === "ok") {
         addExpenseMsg.textContent = "Expense added.";
         addExpenseMsg.className = "success";
